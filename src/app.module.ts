@@ -1,38 +1,34 @@
-/* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { AdsModule } from './ads/ads.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { MuseumModule } from './museum/museum.module';
-import { ExhibitionModule } from './exhibition/exhibition.module';
-import { ArtworkModule } from './artwork/artwork.module';
-import { SponsorModule } from './sponsor/sponsor.module';
-import { ArtistModule } from './artist/artist.module';
-import { MovementModule } from './movement/movement.module';
-import { ImageModule } from './image/image.module';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import {SponsorEntity} from "./sponsor/sponsor.entity/sponsor.entity";
-import { ArtistEntity } from "./artist/artist.entity/artist.entity";
-import { ArtworkEntity } from "./artwork/artwork.entity/artwork.entity";
-import {ImageEntity} from "./image/image.entity/image.entity";
-import { ExhibitionEntity } from "./exhibition/exhibition.entity/exhibition.entity";
-import { MovementEntity } from "./movement/movement.entity/movement.entity";
-import { MuseumEntity } from "./museum/museum.entity/museum.entity";
-import { ScheduleModule } from './schedule/schedule.module';
+import { PlacesModule } from './places/places.module';
+import { RoutesModule } from './routes/routes.module';
+import { SchedulesModule } from './schedules/schedules.module';
+import { UsersModule } from './users/users.module';
+
+const databasePort = Number(process.env.DB_PORT ?? 5432);
 
 @Module({
-  imports: [MuseumModule, ExhibitionModule, ArtworkModule, SponsorModule, ImageModule, ArtistModule, MovementModule,
+  imports: [
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: 'localhost',
       port: 5433,
       username: 'postgres',
       password: '123',
-      database: 'museum',
-      entities: [ArtistEntity, ArtworkEntity, ExhibitionEntity, ImageEntity, MovementEntity, MuseumEntity, SponsorEntity],
-      dropSchema: true,
-      synchronize: true,
+      database: 'InteractiveMapUniandes',
+      autoLoadEntities: true,
+      synchronize: process.env.DB_SYNCHRONIZE === 'true',
     }),
-    ScheduleModule,
+    UsersModule,
+    SchedulesModule,
+    PlacesModule,
+    RoutesModule,
+    AnalyticsModule,
+    AdsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
