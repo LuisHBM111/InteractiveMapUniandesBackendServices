@@ -1,21 +1,11 @@
 import {
-  Body,
   Controller,
   Get,
-  Post,
   Query,
-  UploadedFile,
-  UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import {
-  ApiBody,
-  ApiConsumes,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CalculateClassPathDto } from './dto/calculate-class-path.dto';
 import { CalculatePathDto } from './dto/calculate-path.dto';
-import { ImportGraphDto } from './dto/import-graph.dto';
 import { RoutesService } from './routes.service';
 
 @ApiTags('routes')
@@ -35,34 +25,9 @@ export class RoutesController {
     return this.routesService.calculateShortestPath(query);
   }
 
-  @Post('graph/import')
-  @ApiOperation({ summary: 'Import the campus graph from an Excel path on disk' })
-  importCampusGraph(@Body() dto: ImportGraphDto) {
-    return this.routesService.importCampusGraph(dto);
-  }
-
-  @Post('graph/import/file')
-  @ApiOperation({ summary: 'Import the campus graph from an uploaded Excel file' })
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        file: {
-          type: 'string',
-          format: 'binary',
-        },
-        replaceExisting: { type: 'boolean' },
-        bidirectional: { type: 'boolean' },
-      },
-      required: ['file'],
-    },
-  })
-  @UseInterceptors(FileInterceptor('file'))
-  importCampusGraphFromFile(
-    @UploadedFile() file: { buffer?: Buffer } | undefined,
-    @Body() dto: ImportGraphDto,
-  ) {
-    return this.routesService.importCampusGraph(dto, file?.buffer);
+  @Get('graph/class-path')
+  @ApiOperation({ summary: 'Calculate the shortest path to a scheduled class destination' })
+  calculatePathToClass(@Query() query: CalculateClassPathDto) {
+    return this.routesService.calculatePathToClass(query);
   }
 }

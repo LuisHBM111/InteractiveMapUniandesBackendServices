@@ -1,5 +1,6 @@
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Module } from '@nestjs/common';
+import { Building } from '../places/entities/building.entity';
 import { Room } from '../places/entities/room.entity';
 import { PlacesModule } from '../places/places.module';
 import { User } from '../users/entities/user.entity';
@@ -23,6 +24,7 @@ import { SchedulesService } from './schedules.service';
       Instructor,
       User,
       Room,
+      Building,
     ]),
   ],
   controllers: [SchedulesController],

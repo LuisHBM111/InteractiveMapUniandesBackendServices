@@ -4,11 +4,20 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { read, readFile, utils } from 'xlsx';
-import { Repository } from 'typeorm';
+import ExcelJS from 'exceljs';
+import { Readable } from 'stream';
+import { DataSource, Repository } from 'typeorm';
+import { normalizeSearchText } from '../common/utils/building-matching.util';
+import { resolveProjectImportPath } from '../common/utils/project-import-path.util';
+import {
+  CURATED_BUILDING_ALIASES,
+  CURATED_BUILDING_SEEDS,
+} from './constants/curated-building-data';
 import { Building } from './entities/building.entity';
 import { ImportBuildingsDto } from './dto/import-buildings.dto';
 import { ListBuildingsDto } from './dto/list-buildings.dto';
+import { ListRoomsDto } from './dto/list-rooms.dto';
+import { Room } from './entities/room.entity';
 
 interface BuildingRow {
   Codigo?: string;
@@ -21,6 +30,9 @@ export class PlacesService {
   constructor(
     @InjectRepository(Building)
     private readonly buildingRepository: Repository<Building>,
+    @InjectRepository(Room)
+    private readonly roomRepository: Repository<Room>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async listBuildings(query: ListBuildingsDto) {
@@ -67,8 +79,71 @@ export class PlacesService {
     return building;
   }
 
+  async listBuildingRooms(buildingId: string) {
+    const building = await this.buildingRepository.findOne({
+      where: { id: buildingId },
+    });
+
+    if (!building) {
+      throw new NotFoundException(`Building with id "${buildingId}" was not found.`);
+    }
+
+    return this.roomRepository.find({
+      where: {
+        building: { id: buildingId },
+      },
+      relations: {
+        building: true,
+      },
+      order: {
+        roomCode: 'ASC',
+      },
+    });
+  }
+
+  async listRooms(query: ListRoomsDto) {
+    const rooms = await this.roomRepository.find({
+      where: query.buildingId
+        ? {
+            building: {
+              id: query.buildingId,
+            },
+          }
+        : undefined,
+      relations: {
+        building: true,
+      },
+      order: {
+        roomCode: 'ASC',
+      },
+    });
+
+    const searchTerm = query.search?.trim();
+
+    if (!searchTerm) {
+      return rooms;
+    }
+
+    const normalizedSearch = this.normalizeText(searchTerm);
+
+    return rooms.filter((room) => {
+      const fields = [
+        room.roomCode,
+        room.name,
+        room.floor ?? '',
+        room.building?.code ?? '',
+        room.building?.name ?? '',
+      ];
+
+      return fields.some((field) =>
+        this.normalizeText(field).includes(normalizedSearch),
+      );
+    });
+  }
+
   async importBuildings(dto: ImportBuildingsDto, fileBuffer?: Buffer) {
-    const rows = this.readBuildingRows(dto.filePath, fileBuffer);
+    const rows = await this.readBuildingRows(dto.filePath, fileBuffer);
+    const replaceExisting = this.parseBoolean(dto.replaceExisting);
 
     if (!rows.length) {
       throw new BadRequestException(
@@ -76,75 +151,134 @@ export class PlacesService {
       );
     }
 
-    if (this.parseBoolean(dto.replaceExisting)) {
-      const existingBuildings = await this.buildingRepository.find();
-      if (existingBuildings.length > 0) {
-        await this.buildingRepository.remove(existingBuildings);
+    return this.dataSource.transaction(async (manager) => {
+      const buildingRepository = manager.getRepository(Building);
+      const existingBuildings = await buildingRepository.find();
+      const savedBuildings: Building[] = [];
+
+      for (const row of rows) {
+        const rawCode = row.Codigo?.toString().trim();
+        const rawName = row.Edificio?.toString().trim();
+
+        if (!rawCode || !rawName) {
+          continue;
+        }
+
+        const normalizedAliases = this.extractAliases(rawCode);
+        const gridReference = this.normalizeGridReference(row.Ubicacion);
+        const existingBuilding = this.findBuildingByCode(rawCode, existingBuildings);
+
+        if (existingBuilding && !replaceExisting) {
+          savedBuildings.push(existingBuilding);
+          continue;
+        }
+
+        const building =
+          existingBuilding ?? buildingRepository.create({ code: rawCode });
+
+        building.code = rawCode;
+        building.name = rawName;
+        building.aliases = this.mergeAliases(rawCode, normalizedAliases);
+        building.gridReference = gridReference;
+        building.latitude = existingBuilding?.latitude ?? null;
+        building.longitude = existingBuilding?.longitude ?? null;
+
+        const savedBuilding = await buildingRepository.save(building);
+
+        if (!existingBuilding) {
+          existingBuildings.push(savedBuilding);
+        }
+
+        savedBuildings.push(savedBuilding);
       }
-    }
 
-    const savedBuildings: Building[] = [];
+      for (const seed of CURATED_BUILDING_SEEDS) {
+        const existingBuilding = this.findBuildingByCode(seed.code, existingBuildings);
+        const building =
+          existingBuilding ?? buildingRepository.create({ code: seed.code });
 
-    for (const row of rows) {
-      const rawCode = row.Codigo?.toString().trim();
-      const rawName = row.Edificio?.toString().trim();
+        building.code = seed.code;
+        building.name = existingBuilding?.name ?? seed.name;
+        building.aliases = this.mergeAliases(seed.code, [
+          ...(existingBuilding?.aliases ?? []),
+          ...(seed.aliases ?? []),
+        ]);
+        building.gridReference =
+          existingBuilding?.gridReference ?? seed.gridReference ?? null;
+        building.latitude = existingBuilding?.latitude ?? null;
+        building.longitude = existingBuilding?.longitude ?? null;
 
-      if (!rawCode || !rawName) {
-        continue;
+        const savedBuilding = await buildingRepository.save(building);
+
+        if (!existingBuilding) {
+          existingBuildings.push(savedBuilding);
+          savedBuildings.push(savedBuilding);
+        }
       }
 
-      const normalizedAliases = this.extractAliases(rawCode);
-      const gridReference = this.normalizeGridReference(row.Ubicacion);
-
-      const existingBuilding = await this.findBuildingByCode(rawCode);
-      const building =
-        existingBuilding ?? this.buildingRepository.create({ code: rawCode });
-
-      building.name = rawName;
-      building.aliases = normalizedAliases;
-      building.gridReference = gridReference;
-      building.latitude = existingBuilding?.latitude ?? null;
-      building.longitude = existingBuilding?.longitude ?? null;
-
-      savedBuildings.push(await this.buildingRepository.save(building));
-    }
-
-    return {
-      importedCount: savedBuildings.length,
-      buildings: savedBuildings,
-    };
+      return {
+        importedCount: savedBuildings.length,
+        buildings: savedBuildings,
+      };
+    });
   }
 
-  private readBuildingRows(filePath?: string, fileBuffer?: Buffer) {
-    const workbook = fileBuffer?.length
-      ? read(fileBuffer, { type: 'buffer' })
-      : filePath
-        ? readFile(filePath)
-        : null;
+  private async readBuildingRows(filePath?: string, fileBuffer?: Buffer) {
+    const workbook = new ExcelJS.Workbook();
 
-    if (!workbook) {
+    if (fileBuffer?.length) {
+      await workbook.xlsx.read(Readable.from(fileBuffer));
+    } else if (filePath) {
+      await workbook.xlsx.readFile(
+        resolveProjectImportPath(filePath, '.xlsx'),
+      );
+    } else {
       throw new BadRequestException(
         'Provide a valid filePath or upload an Excel file.',
       );
     }
 
-    const firstSheetName = workbook.SheetNames[0];
-
-    if (!firstSheetName) {
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
       return [];
     }
 
-    const worksheet = workbook.Sheets[firstSheetName];
+    const headerRow = worksheet.getRow(1);
+    const headers = Array.from(
+      { length: headerRow.cellCount },
+      (_, index) => headerRow.getCell(index + 1).text.trim(),
+    );
 
-    return utils.sheet_to_json<BuildingRow>(worksheet, {
-      defval: '',
-      raw: false,
-    });
+    const rows: BuildingRow[] = [];
+
+    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+      const row = worksheet.getRow(rowNumber);
+      const mappedRow: Record<string, string> = {};
+      let hasValues = false;
+
+      headers.forEach((header, index) => {
+        if (!header) {
+          return;
+        }
+
+        const value = row.getCell(index + 1).text.trim();
+        mappedRow[header] = value;
+
+        if (value) {
+          hasValues = true;
+        }
+      });
+
+      if (hasValues) {
+        rows.push(mappedRow as BuildingRow);
+      }
+    }
+
+    return rows;
   }
 
-  private async findBuildingByCode(code: string) {
+  private findBuildingByCode(code: string, buildings: Building[]) {
     const normalizedCode = this.normalizeText(code);
-    const buildings = await this.buildingRepository.find();
 
     return buildings.find((building) => {
       const aliases = [building.code, ...(building.aliases ?? [])];
@@ -161,6 +295,18 @@ export class PlacesService {
       .filter(Boolean);
 
     return [...new Set([rawCode.trim(), ...aliases])];
+  }
+
+  private mergeAliases(code: string, aliases: string[]) {
+    const curatedAliases = CURATED_BUILDING_ALIASES[code] ?? [];
+
+    return [
+      ...new Set(
+        [code, ...aliases, ...curatedAliases]
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ];
   }
 
   private normalizeGridReference(value?: string) {
@@ -186,11 +332,6 @@ export class PlacesService {
   }
 
   private normalizeText(value: string) {
-    return value
-      .normalize('NFD')
-      .replace(/\p{Diacritic}/gu, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toUpperCase();
+    return normalizeSearchText(value);
   }
 }

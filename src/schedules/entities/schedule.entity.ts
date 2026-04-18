@@ -32,6 +32,21 @@ export class Schedule extends TimestampedEntity {
   @Column({ type: 'varchar', nullable: true })
   sourceUrl?: string | null;
 
+  @Column({ type: 'varchar', nullable: true })
+  sourceFileName?: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  sourceStoragePath?: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  sourceStorageProvider?: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  sourceStorageBucket?: string | null;
+
+  @Column({ default: false })
+  isDefaultSample: boolean;
+
   @Column({ type: 'timestamptz', nullable: true })
   importedAt?: Date | null;
 

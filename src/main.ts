@@ -17,6 +17,16 @@ async function bootstrap() {
       'Browser-based documentation and testing UI for the InteractiveMapUniandes backend.',
     )
     .setVersion('1.0')
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        description:
+          'Firebase ID token. In local development, if FIREBASE_DEV_AUTH=true, you can also use Bearer dev:<uid>|<email>|<name>.',
+      },
+      'firebase',
+    )
     .build();
 
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);

@@ -1,22 +1,12 @@
 import {
-  Body,
   Controller,
   Get,
   Param,
-  Post,
   Query,
-  UploadedFile,
-  UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import {
-  ApiBody,
-  ApiConsumes,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
-import { ImportBuildingsDto } from './dto/import-buildings.dto';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ListBuildingsDto } from './dto/list-buildings.dto';
+import { ListRoomsDto } from './dto/list-rooms.dto';
 import { PlacesService } from './places.service';
 
 @ApiTags('places')
@@ -36,33 +26,15 @@ export class PlacesController {
     return this.placesService.getBuildingById(id);
   }
 
-  @Post('buildings/import')
-  @ApiOperation({ summary: 'Import buildings from an Excel path on disk' })
-  importBuildings(@Body() dto: ImportBuildingsDto) {
-    return this.placesService.importBuildings(dto);
+  @Get('buildings/:id/rooms')
+  @ApiOperation({ summary: 'List imported rooms for one building' })
+  listBuildingRooms(@Param('id') id: string) {
+    return this.placesService.listBuildingRooms(id);
   }
 
-  @Post('buildings/import/file')
-  @ApiOperation({ summary: 'Import buildings from an uploaded Excel file' })
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        file: {
-          type: 'string',
-          format: 'binary',
-        },
-        replaceExisting: { type: 'boolean' },
-      },
-      required: ['file'],
-    },
-  })
-  @UseInterceptors(FileInterceptor('file'))
-  importBuildingsFromFile(
-    @UploadedFile() file: { buffer?: Buffer } | undefined,
-    @Body() dto: ImportBuildingsDto,
-  ) {
-    return this.placesService.importBuildings(dto, file?.buffer);
+  @Get('rooms')
+  @ApiOperation({ summary: 'List imported rooms' })
+  listRooms(@Query() query: ListRoomsDto) {
+    return this.placesService.listRooms(query);
   }
 }

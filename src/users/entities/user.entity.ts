@@ -13,13 +13,16 @@ import { UserProfile } from './user-profile.entity';
 
 @Entity('users')
 export class User extends TimestampedEntity {
-  @Column({ unique: true })
-  email: string;
+  @Column({ type: 'varchar', unique: true, nullable: true })
+  email?: string | null;
+
+  @Column({ type: 'varchar', unique: true, nullable: true })
+  firebaseUid?: string | null;
 
   @Column({
     type: 'enum',
     enum: AuthProvider,
-    default: AuthProvider.MICROSOFT,
+    default: AuthProvider.FIREBASE,
   })
   authProvider: AuthProvider;
 

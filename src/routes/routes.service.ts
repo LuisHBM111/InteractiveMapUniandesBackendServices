@@ -4,10 +4,16 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { read, readFile, utils } from 'xlsx';
-import { Repository } from 'typeorm';
+import ExcelJS from 'exceljs';
+import { Readable } from 'stream';
+import { DataSource, Repository } from 'typeorm';
+import { normalizeSearchText } from '../common/utils/building-matching.util';
+import { resolveProjectImportPath } from '../common/utils/project-import-path.util';
 import { TravelMode } from '../common/enums/travel-mode.enum';
 import { Building } from '../places/entities/building.entity';
+import { ScheduledClass } from '../schedules/entities/scheduled-class.entity';
+import { resolveScheduledClassDestination } from '../schedules/utils/class-destination.util';
+import { CalculateClassPathDto } from './dto/calculate-class-path.dto';
 import { CalculatePathDto } from './dto/calculate-path.dto';
 import { ImportGraphDto } from './dto/import-graph.dto';
 import { Edge } from './entities/edge.entity';
@@ -33,10 +39,13 @@ export class RoutesService {
     private readonly edgeRepository: Repository<Edge>,
     @InjectRepository(Building)
     private readonly buildingRepository: Repository<Building>,
+    @InjectRepository(ScheduledClass)
+    private readonly scheduledClassRepository: Repository<ScheduledClass>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async importCampusGraph(dto: ImportGraphDto, fileBuffer?: Buffer) {
-    const rows = this.readGraphRows(dto.filePath, fileBuffer);
+    const rows = await this.readGraphRows(dto.filePath, fileBuffer);
 
     if (!rows.length) {
       throw new BadRequestException(
@@ -47,69 +56,95 @@ export class RoutesService {
     const bidirectional = dto.bidirectional === undefined
       ? true
       : this.parseBoolean(dto.bidirectional);
+    const replaceExisting = this.parseBoolean(dto.replaceExisting);
 
-    if (this.parseBoolean(dto.replaceExisting)) {
-      await this.clearCampusGraph();
-    }
+    return this.dataSource.transaction(async (manager) => {
+      const routeNodeRepository = manager.getRepository(RouteNode);
+      const edgeRepository = manager.getRepository(Edge);
+      const buildingRepository = manager.getRepository(Building);
 
-    const buildings = await this.buildingRepository.find();
-    const nodeCache = new Map<string, RouteNode>();
-    const existingNodes = await this.routeNodeRepository.find({
-      where: { isCampusGraphNode: true },
-      relations: { place: true },
-    });
-
-    for (const node of existingNodes) {
-      nodeCache.set(this.normalizeText(node.label), node);
-    }
-
-    const edgesToPersist: Edge[] = [];
-    const edgeKeySet = new Set<string>();
-
-    for (const row of rows) {
-      const fromLabel = row.from?.toString().trim();
-      const toLabel = row.to?.toString().trim();
-      const travelTimeSeconds = Number(row.time);
-
-      if (!fromLabel || !toLabel || Number.isNaN(travelTimeSeconds)) {
-        continue;
+      if (replaceExisting) {
+        await this.clearCampusGraph(edgeRepository, routeNodeRepository);
       }
 
-      const fromNode = await this.getOrCreateCampusNode(
-        fromLabel,
-        nodeCache,
-        buildings,
-      );
-      const toNode = await this.getOrCreateCampusNode(toLabel, nodeCache, buildings);
+      const buildings = await buildingRepository.find();
+      const nodeCache = new Map<string, RouteNode>();
+      const existingNodes = await routeNodeRepository.find({
+        where: { isCampusGraphNode: true },
+        relations: { place: true },
+      });
 
-      this.pushCampusEdge(
-        edgesToPersist,
-        edgeKeySet,
-        fromNode,
-        toNode,
-        travelTimeSeconds,
-      );
+      for (const node of existingNodes) {
+        nodeCache.set(this.normalizeText(node.label), node);
+      }
 
-      if (bidirectional) {
+      const edgesToPersist: Edge[] = [];
+      const edgeKeySet = new Set<string>();
+      const existingEdges = await edgeRepository.find({
+        where: { isCampusGraphEdge: true },
+        relations: {
+          fromNode: true,
+          toNode: true,
+        },
+      });
+
+      for (const edge of existingEdges) {
+        edgeKeySet.add(`${edge.fromNode.id}->${edge.toNode.id}`);
+      }
+
+      for (const row of rows) {
+        const fromLabel = row.from?.toString().trim();
+        const toLabel = row.to?.toString().trim();
+        const travelTimeSeconds = Number(row.time);
+
+        if (!fromLabel || !toLabel || Number.isNaN(travelTimeSeconds)) {
+          continue;
+        }
+
+        const fromNode = await this.getOrCreateCampusNode(
+          fromLabel,
+          nodeCache,
+          buildings,
+          routeNodeRepository,
+        );
+        const toNode = await this.getOrCreateCampusNode(
+          toLabel,
+          nodeCache,
+          buildings,
+          routeNodeRepository,
+        );
+
         this.pushCampusEdge(
           edgesToPersist,
           edgeKeySet,
-          toNode,
           fromNode,
+          toNode,
           travelTimeSeconds,
+          edgeRepository,
         );
+
+        if (bidirectional) {
+          this.pushCampusEdge(
+            edgesToPersist,
+            edgeKeySet,
+            toNode,
+            fromNode,
+            travelTimeSeconds,
+            edgeRepository,
+          );
+        }
       }
-    }
 
-    if (edgesToPersist.length > 0) {
-      await this.edgeRepository.save(edgesToPersist);
-    }
+      if (edgesToPersist.length > 0) {
+        await edgeRepository.save(edgesToPersist);
+      }
 
-    return {
-      importedNodeCount: nodeCache.size,
-      importedEdgeCount: edgesToPersist.length,
-      bidirectional,
-    };
+      return {
+        importedNodeCount: nodeCache.size,
+        importedEdgeCount: edgesToPersist.length,
+        bidirectional,
+      };
+    });
   }
 
   async listCampusNodes() {
@@ -125,7 +160,21 @@ export class RoutesService {
   }
 
   async calculateShortestPath(query: CalculatePathDto) {
-    if (!query.from?.trim() || !query.to?.trim()) {
+    return this.calculateShortestPathBetween(query.from, query.to);
+  }
+
+  async calculatePathToClass(query: CalculateClassPathDto) {
+    const scheduledClass = await this.resolveScheduledClass(query.classId);
+    return this.buildClassPathResponse(query.from, scheduledClass);
+  }
+
+  async calculatePathToUserClass(userId: string, query: CalculateClassPathDto) {
+    const scheduledClass = await this.resolveScheduledClass(query.classId, userId);
+    return this.buildClassPathResponse(query.from, scheduledClass);
+  }
+
+  private async calculateShortestPathBetween(from: string, to: string) {
+    if (!from?.trim() || !to?.trim()) {
       throw new BadRequestException('Both "from" and "to" are required.');
     }
 
@@ -144,15 +193,15 @@ export class RoutesService {
       this.buildingRepository.find(),
     ]);
 
-    const startNode = this.resolveNodeQuery(query.from, nodes, buildings);
-    const endNode = this.resolveNodeQuery(query.to, nodes, buildings);
+    const startNode = this.resolveNodeQuery(from, nodes, buildings);
+    const endNode = this.resolveNodeQuery(to, nodes, buildings);
 
     if (!startNode) {
-      throw new NotFoundException(`Could not resolve origin "${query.from}".`);
+      throw new NotFoundException(`Could not resolve origin "${from}".`);
     }
 
     if (!endNode) {
-      throw new NotFoundException(`Could not resolve destination "${query.to}".`);
+      throw new NotFoundException(`Could not resolve destination "${to}".`);
     }
 
     if (startNode.id === endNode.id) {
@@ -270,44 +319,76 @@ export class RoutesService {
     };
   }
 
-  private readGraphRows(filePath?: string, fileBuffer?: Buffer) {
-    const workbook = fileBuffer?.length
-      ? read(fileBuffer, { type: 'buffer' })
-      : filePath
-        ? readFile(filePath)
-        : null;
+  private async readGraphRows(filePath?: string, fileBuffer?: Buffer) {
+    const workbook = new ExcelJS.Workbook();
 
-    if (!workbook) {
+    if (fileBuffer?.length) {
+      await workbook.xlsx.read(Readable.from(fileBuffer));
+    } else if (filePath) {
+      await workbook.xlsx.readFile(
+        resolveProjectImportPath(filePath, '.xlsx'),
+      );
+    } else {
       throw new BadRequestException(
         'Provide a valid filePath or upload an Excel file.',
       );
     }
 
-    const firstSheetName = workbook.SheetNames[0];
-
-    if (!firstSheetName) {
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
       return [];
     }
 
-    return utils.sheet_to_json<GraphRow>(workbook.Sheets[firstSheetName], {
-      defval: '',
-      raw: false,
-    });
+    const headerRow = worksheet.getRow(1);
+    const headers = Array.from(
+      { length: headerRow.cellCount },
+      (_, index) => headerRow.getCell(index + 1).text.trim(),
+    );
+
+    const rows: GraphRow[] = [];
+
+    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+      const row = worksheet.getRow(rowNumber);
+      const mappedRow: Record<string, string> = {};
+      let hasValues = false;
+
+      headers.forEach((header, index) => {
+        if (!header) {
+          return;
+        }
+
+        const value = row.getCell(index + 1).text.trim();
+        mappedRow[header] = value;
+
+        if (value) {
+          hasValues = true;
+        }
+      });
+
+      if (hasValues) {
+        rows.push(mappedRow as GraphRow);
+      }
+    }
+
+    return rows;
   }
 
-  private async clearCampusGraph() {
-    const existingEdges = await this.edgeRepository.find({
+  private async clearCampusGraph(
+    edgeRepository: Repository<Edge>,
+    routeNodeRepository: Repository<RouteNode>,
+  ) {
+    const existingEdges = await edgeRepository.find({
       where: { isCampusGraphEdge: true },
     });
     if (existingEdges.length > 0) {
-      await this.edgeRepository.remove(existingEdges);
+      await edgeRepository.remove(existingEdges);
     }
 
-    const existingNodes = await this.routeNodeRepository.find({
+    const existingNodes = await routeNodeRepository.find({
       where: { isCampusGraphNode: true },
     });
     if (existingNodes.length > 0) {
-      await this.routeNodeRepository.remove(existingNodes);
+      await routeNodeRepository.remove(existingNodes);
     }
   }
 
@@ -315,6 +396,7 @@ export class RoutesService {
     label: string,
     nodeCache: Map<string, RouteNode>,
     buildings: Building[],
+    routeNodeRepository: Repository<RouteNode>,
   ) {
     const normalizedLabel = this.normalizeText(label);
     const cachedNode = nodeCache.get(normalizedLabel);
@@ -323,7 +405,7 @@ export class RoutesService {
       return cachedNode;
     }
 
-    const node = this.routeNodeRepository.create({
+    const node = routeNodeRepository.create({
       label: label.trim(),
       latitude: null,
       longitude: null,
@@ -331,7 +413,7 @@ export class RoutesService {
       place: this.resolveBuildingForNodeLabel(label, buildings) ?? null,
     });
 
-    const savedNode = await this.routeNodeRepository.save(node);
+    const savedNode = await routeNodeRepository.save(node);
     nodeCache.set(normalizedLabel, savedNode);
 
     return savedNode;
@@ -343,6 +425,7 @@ export class RoutesService {
     fromNode: RouteNode,
     toNode: RouteNode,
     travelTimeSeconds: number,
+    edgeRepository: Repository<Edge>,
   ) {
     const key = `${fromNode.id}->${toNode.id}`;
 
@@ -352,7 +435,7 @@ export class RoutesService {
 
     edgeKeySet.add(key);
     edgesToPersist.push(
-      this.edgeRepository.create({
+      edgeRepository.create({
         fromNode,
         toNode,
         travelTimeSeconds,
@@ -536,11 +619,68 @@ export class RoutesService {
   }
 
   private normalizeText(value: string) {
-    return value
-      .normalize('NFD')
-      .replace(/\p{Diacritic}/gu, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toUpperCase();
+    return normalizeSearchText(value);
+  }
+
+  private async resolveScheduledClass(classId: string, userId?: string) {
+    if (!classId?.trim()) {
+      throw new BadRequestException('"classId" is required.');
+    }
+
+    const scheduledClass = await this.scheduledClassRepository.findOne({
+      where: userId
+        ? {
+            id: classId,
+            schedule: {
+              user: {
+                id: userId,
+              },
+            },
+          }
+        : { id: classId },
+      relations: {
+        schedule: true,
+        room: {
+          building: true,
+        },
+      },
+    });
+
+    if (!scheduledClass) {
+      throw new NotFoundException(
+        userId
+          ? `Scheduled class "${classId}" was not found for the current user.`
+          : `Scheduled class "${classId}" was not found.`,
+      );
+    }
+
+    return scheduledClass;
+  }
+
+  private async buildClassPathResponse(from: string, scheduledClass: ScheduledClass) {
+    const buildings = await this.buildingRepository.find();
+    const destination = resolveScheduledClassDestination(scheduledClass, buildings);
+
+    if (!destination.routeTarget) {
+      throw new NotFoundException(
+        `Could not resolve a navigable destination for class "${scheduledClass.title}".`,
+      );
+    }
+
+    const path = await this.calculateShortestPathBetween(
+      from,
+      destination.routeTarget,
+    );
+
+    return {
+      class: {
+        id: scheduledClass.id,
+        title: scheduledClass.title,
+        startsAt: scheduledClass.startsAt,
+        endsAt: scheduledClass.endsAt,
+      },
+      destination,
+      path,
+    };
   }
 }

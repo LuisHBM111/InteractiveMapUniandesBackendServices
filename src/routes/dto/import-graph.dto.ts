@@ -3,7 +3,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 export class ImportGraphDto {
   @ApiPropertyOptional({
     example:
-      'C:/Users/luish/Downloads/SAR/InteractiveMapUniandes_Back/Backend/move.xlsx',
+      'C:/Users/PERSONAL/IdeaProjects/InteractiveMapUniandesBackendServices/src/utils/move.xlsx',
   })
   filePath?: string;
 

@@ -26,5 +26,14 @@ describe('IcsParserService', () => {
         timezone: 'America/Bogota',
       }),
     );
+    expect(parsedCalendar.events[0].location).toEqual(
+      expect.objectContaining({
+        buildingName: 'Edif. Mario Laserna (ML)',
+        roomCode: 'ML_340',
+      }),
+    );
+    expect(parsedCalendar.events[0].instructors).toContain(
+      'QUIROGA ALFARO, NATHALIA',
+    );
   });
 });
