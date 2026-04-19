@@ -10,7 +10,7 @@ describe('IcsParserService', () => {
       process.cwd(),
       'src',
       'utils',
-      'SEGUNDO SEMESTRE 2026.ics',
+      'PRIMER SEMESTRE 2026.ics',
     );
     const content = readFileSync(samplePath, 'utf8');
 
@@ -28,12 +28,12 @@ describe('IcsParserService', () => {
     );
     expect(parsedCalendar.events[0].location).toEqual(
       expect.objectContaining({
-        buildingName: 'Edif. Mario Laserna (ML)',
-        roomCode: 'ML_340',
+        buildingName: 'Edif. J.M.Santodomingo (SD)',
+        roomCode: 'SD_402',
       }),
     );
-    expect(parsedCalendar.events[0].instructors).toContain(
-      'QUIROGA ALFARO, NATHALIA',
+    expect(parsedCalendar.events[0].instructors).toEqual(
+      expect.arrayContaining([expect.stringContaining('LINARES VASQUEZ, MARIO')]),
     );
   });
 });

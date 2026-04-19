@@ -5,6 +5,7 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { environment } from '../common/config/environment.util';
 
 @Injectable()
 export class SetupGuard implements CanActivate {
@@ -12,8 +13,8 @@ export class SetupGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<{
       headers: Record<string, string | string[] | undefined>;
     }>();
-    const expectedKey = process.env.SETUP_API_KEY?.trim();
-    const setupEndpointsEnabled = process.env.ENABLE_SETUP_ENDPOINTS === 'true';
+    const expectedKey = environment.setupApiKey;
+    const setupEndpointsEnabled = environment.enableSetupEndpoints;
 
     if (expectedKey) {
       const providedHeader = request.headers['x-setup-key'];

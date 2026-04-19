@@ -49,7 +49,14 @@ export class MeService {
   }
 
   async getNextClass(currentUser: AuthenticatedUserContext) {
-    return this.schedulesService.getNextClassForUser(currentUser.user.id);
+    const nextClass = await this.schedulesService.getNextClassForUser(
+      currentUser.user.id,
+    );
+
+    return {
+      hasUpcomingClass: Boolean(nextClass),
+      class: nextClass,
+    };
   }
 
   async listTodayClasses(currentUser: AuthenticatedUserContext) {
@@ -93,7 +100,7 @@ export class MeService {
     dto: ImportMyScheduleDto,
   ) {
     const defaultContent = await this.schedulesService.getDefaultIcsFileContent();
-    const defaultFileName = 'SEGUNDO SEMESTRE 2026.ics';
+    const defaultFileName = 'PRIMER SEMESTRE 2026.ics';
     const fileBuffer = Buffer.from(defaultContent, 'utf8');
     const storedFile = await this.firebaseStorageService.saveUserIcsFile({
       firebaseUid: this.resolveFirebaseUid(currentUser),
@@ -126,6 +133,37 @@ export class MeService {
       classId,
       from,
     } as CalculateClassPathDto);
+  }
+
+  async calculatePathToNextClass(
+    currentUser: AuthenticatedUserContext,
+    from: string,
+  ) {
+    const nextClass = await this.schedulesService.getNextClassForUser(
+      currentUser.user.id,
+    );
+
+    if (!nextClass) {
+      return {
+        hasUpcomingClass: false,
+        class: null,
+        path: null,
+      };
+    }
+
+    const path = await this.routesService.calculatePathToUserClass(
+      currentUser.user.id,
+      {
+        classId: nextClass.id,
+        from,
+      } as CalculateClassPathDto,
+    );
+
+    return {
+      hasUpcomingClass: true,
+      class: nextClass,
+      path,
+    };
   }
 
   private mapImportDto(dto: ImportMyScheduleDto): ImportScheduleDto {

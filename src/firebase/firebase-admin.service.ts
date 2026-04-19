@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { DecodedIdToken } from 'firebase-admin/auth';
+import { environment } from '../common/config/environment.util';
 
 interface FirebaseServiceAccount {
   projectId: string;
@@ -57,16 +58,15 @@ export class FirebaseAdminService {
       return admin.app();
     }
 
-    const storageBucket = process.env.FIREBASE_STORAGE_BUCKET?.trim();
+    const storageBucket = environment.firebaseStorageBucket;
     const hasApplicationDefaultCredentials = Boolean(
-      process.env.GOOGLE_APPLICATION_CREDENTIALS ||
-        process.env.FIREBASE_AUTH_EMULATOR_HOST ||
-        process.env.K_SERVICE ||
-        process.env.FUNCTION_TARGET,
+      environment.googleApplicationCredentials ||
+        environment.firebaseAuthEmulatorHost ||
+        environment.gcpCloudRunService ||
+        environment.gcpFunctionTarget,
     );
 
-    const serviceAccountPath =
-      process.env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim();
+    const serviceAccountPath = environment.firebaseServiceAccountPath;
 
     if (serviceAccountPath) {
       return admin.initializeApp({
@@ -94,11 +94,9 @@ export class FirebaseAdminService {
   }
 
   private readInlineServiceAccount(): FirebaseServiceAccount | undefined {
-    const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY
-      ?.replace(/\\n/g, '\n')
-      .trim();
+    const projectId = environment.firebaseProjectId;
+    const clientEmail = environment.firebaseClientEmail;
+    const privateKey = environment.firebasePrivateKey?.trim();
 
     if (!projectId || !clientEmail || !privateKey) {
       return undefined;
@@ -112,7 +110,7 @@ export class FirebaseAdminService {
   }
 
   private isDevAuthEnabled() {
-    return process.env.FIREBASE_DEV_AUTH === 'true';
+    return environment.firebaseDevAuth;
   }
 
   private buildDevToken(token: string): DecodedIdToken {

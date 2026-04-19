@@ -1,10 +1,15 @@
 import { VersioningType } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { AppExceptionFilter } from './common/filters/app-exception.filter';
+import { createAppValidationPipe } from './common/pipes/app-validation.pipe';
 import { AppModule } from './app.module';
+import { environment } from './common/config/environment.util';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.useGlobalPipes(createAppValidationPipe());
+  app.useGlobalFilters(new AppExceptionFilter());
   app.enableVersioning({
     type: VersioningType.URI,
     prefix: 'api/v',
@@ -36,6 +41,6 @@ async function bootstrap() {
     },
   });
 
-  await app.listen(3000);
+  await app.listen(environment.appPort);
 }
 bootstrap();

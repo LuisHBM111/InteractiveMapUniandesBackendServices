@@ -127,4 +127,13 @@ export class MeController {
   ) {
     return this.meService.calculatePathToClass(currentUser, classId, query.from);
   }
+
+  @Get('routes/to-next-class')
+  @ApiOperation({ summary: 'Calculate a route from a graph node to the authenticated user next upcoming class' })
+  calculatePathToNextClass(
+    @CurrentUser() currentUser: AuthenticatedUserContext,
+    @Query() query: MyClassPathDto,
+  ) {
+    return this.meService.calculatePathToNextClass(currentUser, query.from);
+  }
 }

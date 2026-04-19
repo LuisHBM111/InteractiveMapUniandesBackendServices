@@ -28,6 +28,11 @@ import {
   ParsedIcsLocation,
 } from './interfaces/parsed-ics.interface';
 import { resolveScheduledClassDestination } from './utils/class-destination.util';
+import {
+  findNextOccurrence,
+  resolveOccurrenceForDate,
+  ScheduledClassOccurrence,
+} from './utils/scheduled-class-occurrence.util';
 
 interface ScheduleImportContext {
   scheduleRepository: Repository<Schedule>;
@@ -107,9 +112,9 @@ export class SchedulesService {
       },
       {
         icsContent: defaultContent,
-        fileName: 'SEGUNDO SEMESTRE 2026.ics',
+        fileName: 'PRIMER SEMESTRE 2026.ics',
         sourceType: ScheduleSourceType.DEFAULT_SAMPLE,
-        sourceFileName: 'SEGUNDO SEMESTRE 2026.ics',
+        sourceFileName: 'PRIMER SEMESTRE 2026.ics',
         isDefaultSample: true,
       },
     );
@@ -317,35 +322,63 @@ export class SchedulesService {
     const latestSchedule = await this.getLatestScheduleForUser(userId);
     const buildings = await this.buildingRepository.find();
     const nextClass = (latestSchedule.classes ?? [])
-      .filter((scheduledClass) => scheduledClass.endsAt >= referenceDate)
+      .map((scheduledClass) => ({
+        scheduledClass,
+        occurrence: findNextOccurrence(scheduledClass, referenceDate),
+      }))
+      .filter(
+        (
+          candidate,
+        ): candidate is {
+          scheduledClass: ScheduledClass;
+          occurrence: ScheduledClassOccurrence;
+        } => Boolean(candidate.occurrence),
+      )
       .sort(
         (leftClass, rightClass) =>
-          leftClass.startsAt.getTime() - rightClass.startsAt.getTime(),
+          leftClass.occurrence.startsAt.getTime() -
+          rightClass.occurrence.startsAt.getTime(),
       )[0];
 
     if (!nextClass) {
       return null;
     }
 
-    return this.mapScheduledClassWithDestination(nextClass, buildings);
+    return this.mapScheduledClassWithDestination(
+      nextClass.scheduledClass,
+      buildings,
+      nextClass.occurrence,
+    );
   }
 
   async listTodayClassesForUser(userId: string, referenceDate = new Date()) {
     const latestSchedule = await this.getLatestScheduleForUser(userId);
     const buildings = await this.buildingRepository.find();
-    const timezone = latestSchedule.timezone || 'America/Bogota';
-    const targetDate = this.formatDateInTimeZone(referenceDate, timezone);
 
     return (latestSchedule.classes ?? [])
-      .filter((scheduledClass) => {
-        const classTimezone = scheduledClass.timezone || timezone;
-        return (
-          this.formatDateInTimeZone(scheduledClass.startsAt, classTimezone) ===
-          targetDate
-        );
-      })
-      .map((scheduledClass) =>
-        this.mapScheduledClassWithDestination(scheduledClass, buildings),
+      .map((scheduledClass) => ({
+        scheduledClass,
+        occurrence: resolveOccurrenceForDate(scheduledClass, referenceDate),
+      }))
+      .filter(
+        (
+          candidate,
+        ): candidate is {
+          scheduledClass: ScheduledClass;
+          occurrence: ScheduledClassOccurrence;
+        } => Boolean(candidate.occurrence),
+      )
+      .sort(
+        (leftClass, rightClass) =>
+          leftClass.occurrence.startsAt.getTime() -
+          rightClass.occurrence.startsAt.getTime(),
+      )
+      .map(({ scheduledClass, occurrence }) =>
+        this.mapScheduledClassWithDestination(
+          scheduledClass,
+          buildings,
+          occurrence,
+        ),
       );
   }
 
@@ -632,6 +665,9 @@ export class SchedulesService {
 
   private async readDefaultIcsFile() {
     const candidatePaths = [
+      join(process.cwd(), 'src', 'utils', 'PRIMER SEMESTRE 2026.ics'),
+      join(process.cwd(), 'dist', 'utils', 'PRIMER SEMESTRE 2026.ics'),
+      join(process.cwd(), 'utils', 'PRIMER SEMESTRE 2026.ics'),
       join(process.cwd(), 'src', 'utils', 'SEGUNDO SEMESTRE 2026.ics'),
       join(process.cwd(), 'dist', 'utils', 'SEGUNDO SEMESTRE 2026.ics'),
       join(process.cwd(), 'utils', 'SEGUNDO SEMESTRE 2026.ics'),
@@ -758,23 +794,20 @@ export class SchedulesService {
     return roomCode.trim().replace(/[_-]+/g, ' ');
   }
 
-  private formatDateInTimeZone(date: Date, timeZone: string) {
-    const formatter = new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
-
-    return formatter.format(date);
-  }
-
   private mapScheduledClassWithDestination(
     scheduledClass: ScheduledClass,
     buildings: Building[],
+    occurrence?: ScheduledClassOccurrence | null,
   ) {
     return {
       ...scheduledClass,
+      occurrence: occurrence
+        ? {
+            startsAt: occurrence.startsAt,
+            endsAt: occurrence.endsAt,
+            isRecurring: occurrence.isRecurring,
+          }
+        : null,
       destination: resolveScheduledClassDestination(scheduledClass, buildings),
     };
   }
